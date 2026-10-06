@@ -1,0 +1,287 @@
+#include "ui/ui_manager.h"
+#include "graphics/renderer.h"
+#include "ui/diagnostic_overlay.h"
+#include "net/network_manager.h"
+#include "auth/auth_manager.h"
+#include "net/luna_api.h"
+
+#if defined(__vita__)
+#include <psp2/ctrl.h>
+#else
+#define SCE_CTRL_UP        (1<<4)
+#define SCE_CTRL_DOWN      (1<<6)
+#define SCE_CTRL_LEFT      (1<<7)
+#define SCE_CTRL_RIGHT     (1<<5)
+#define SCE_CTRL_CROSS     (1<<14)
+#define SCE_CTRL_CIRCLE    (1<<13)
+#define SCE_CTRL_SELECT    (1<<0)
+#define SCE_CTRL_START     (1<<3)
+#endif
+
+AppState UIManager::m_currentState = STATE_MAIN_MENU;
+int UIManager::m_selectedMenuIndex = 0;
+int UIManager::m_selectedCatalogIndex = 0;
+int UIManager::m_selectedSettingIndex = 0;
+
+int UIManager::m_targetBitrateMbps = 10;
+bool UIManager::m_enableHardwareDecoder = true;
+
+static std::vector<LunaGame> g_catalogGames;
+
+static const MenuItem MAIN_MENU_ITEMS[] = {
+    { "Connect Amazon Account", "Authenticate via Login with Amazon (OAuth Device Flow)", STATE_LOGIN_STUB },
+    { "Browse Game Catalog",   "View Luna+ and Prime Gaming titles",                   STATE_CATALOG },
+    { "Test Stream Pipeline",   "Simulate 720p 60fps hardware H.264 stream playback",   STATE_STREAM_ACTIVE },
+    { "Stream Settings",       "Adjust bitrate targets and hardware acceleration",     STATE_SETTINGS }
+};
+static const int MAIN_MENU_COUNT = sizeof(MAIN_MENU_ITEMS) / sizeof(MAIN_MENU_ITEMS[0]);
+
+void UIManager::init() {
+    NetworkManager::init();
+    AuthManager::init();
+    LunaAPI::init();
+
+    m_currentState = STATE_MAIN_MENU;
+    m_selectedMenuIndex = 0;
+    m_selectedCatalogIndex = 0;
+    m_selectedSettingIndex = 0;
+    m_targetBitrateMbps = 10;
+    m_enableHardwareDecoder = true;
+
+    g_catalogGames = LunaAPI::fetchCatalog();
+}
+
+AppState UIManager::getCurrentState() {
+    return m_currentState;
+}
+
+void UIManager::setState(AppState newState) {
+    m_currentState = newState;
+}
+
+void UIManager::update(float deltaTime, uint32_t buttonsPressed) {
+    AuthManager::update(deltaTime);
+
+    // Global toggle for Diagnostic Overlay (SELECT button)
+    if (buttonsPressed & SCE_CTRL_SELECT) {
+        DiagnosticOverlay::toggleVisibility();
+    }
+
+    switch (m_currentState) {
+        case STATE_MAIN_MENU:
+            if (buttonsPressed & SCE_CTRL_DOWN) {
+                m_selectedMenuIndex = (m_selectedMenuIndex + 1) % MAIN_MENU_COUNT;
+            } else if (buttonsPressed & SCE_CTRL_UP) {
+                m_selectedMenuIndex = (m_selectedMenuIndex - 1 + MAIN_MENU_COUNT) % MAIN_MENU_COUNT;
+            } else if (buttonsPressed & SCE_CTRL_CROSS) {
+                m_currentState = MAIN_MENU_ITEMS[m_selectedMenuIndex].targetState;
+                if (m_currentState == STATE_LOGIN_STUB && !AuthManager::isAuthenticated()) {
+                    AuthManager::startDeviceAuth();
+                }
+            }
+            break;
+
+        case STATE_LOGIN_STUB:
+            if (buttonsPressed & SCE_CTRL_CROSS) {
+                AuthManager::startDeviceAuth();
+            } else if (buttonsPressed & SCE_CTRL_CIRCLE) {
+                m_currentState = STATE_MAIN_MENU;
+            }
+            if (AuthManager::isAuthenticated()) {
+                m_currentState = STATE_CATALOG;
+            }
+            break;
+
+        case STATE_CATALOG:
+            if (!g_catalogGames.empty()) {
+                if (buttonsPressed & SCE_CTRL_DOWN) {
+                    m_selectedCatalogIndex = (m_selectedCatalogIndex + 1) % g_catalogGames.size();
+                } else if (buttonsPressed & SCE_CTRL_UP) {
+                    m_selectedCatalogIndex = (m_selectedCatalogIndex - 1 + g_catalogGames.size()) % g_catalogGames.size();
+                } else if (buttonsPressed & SCE_CTRL_CROSS) {
+                    // Start stream for selected game
+                    m_currentState = STATE_STREAM_ACTIVE;
+                }
+            }
+            if (buttonsPressed & SCE_CTRL_CIRCLE) {
+                m_currentState = STATE_MAIN_MENU;
+            }
+            break;
+
+        case STATE_STREAM_ACTIVE:
+            if (buttonsPressed & SCE_CTRL_CIRCLE) {
+                m_currentState = STATE_CATALOG;
+            }
+            break;
+
+        case STATE_SETTINGS:
+            if (buttonsPressed & SCE_CTRL_DOWN) {
+                m_selectedSettingIndex = (m_selectedSettingIndex + 1) % 2;
+            } else if (buttonsPressed & SCE_CTRL_UP) {
+                m_selectedSettingIndex = (m_selectedSettingIndex - 1 + 2) % 2;
+            } else if (buttonsPressed & SCE_CTRL_CROSS || buttonsPressed & SCE_CTRL_RIGHT || buttonsPressed & SCE_CTRL_LEFT) {
+                if (m_selectedSettingIndex == 0) {
+                    m_targetBitrateMbps += 5;
+                    if (m_targetBitrateMbps > 15) m_targetBitrateMbps = 5;
+                    DiagnosticOverlay::setStreamStats(LUNA_TARGET_WIDTH, LUNA_TARGET_HEIGHT, LUNA_TARGET_FPS, m_targetBitrateMbps * 1000, 8.4f);
+                } else if (m_selectedSettingIndex == 1) {
+                    m_enableHardwareDecoder = !m_enableHardwareDecoder;
+                }
+            } else if (buttonsPressed & SCE_CTRL_CIRCLE) {
+                m_currentState = STATE_MAIN_MENU;
+            }
+            break;
+    }
+}
+
+void UIManager::render() {
+    switch (m_currentState) {
+        case STATE_MAIN_MENU:
+            renderMainMenu();
+            break;
+        case STATE_LOGIN_STUB:
+            renderLoginStub();
+            break;
+        case STATE_CATALOG:
+            renderCatalog();
+            break;
+        case STATE_STREAM_ACTIVE:
+            renderStreamActive();
+            break;
+        case STATE_SETTINGS:
+            renderSettings();
+            break;
+    }
+}
+
+void UIManager::renderMainMenu() {
+    Renderer::drawHeader("AMAZON LUNA - MAIN MENU");
+    
+    float startY = 80.0f;
+    float cardWidth = 920.0f;
+    float cardHeight = 65.0f;
+    float spacing = 15.0f;
+
+    for (int i = 0; i < MAIN_MENU_COUNT; ++i) {
+        float y = startY + i * (cardHeight + spacing);
+        bool isSelected = (i == m_selectedMenuIndex);
+
+        uint32_t bgColor = isSelected ? RGBA8(40, 55, 90, 255) : RGBA8(22, 28, 44, 255);
+        uint32_t outlineColor = isSelected ? RGBA8(255, 140, 0, 255) : RGBA8(45, 55, 80, 255);
+        uint32_t titleColor = isSelected ? RGBA8(255, 255, 255, 255) : RGBA8(210, 220, 240, 255);
+        uint32_t descColor = isSelected ? RGBA8(200, 215, 245, 255) : RGBA8(140, 150, 175, 255);
+
+        Renderer::drawRect(20, y, cardWidth, cardHeight, bgColor);
+        Renderer::drawRectOutline(20, y, cardWidth, cardHeight, isSelected ? 2.5f : 1.0f, outlineColor);
+
+        if (isSelected) {
+            Renderer::drawRect(20, y, 6, cardHeight, RGBA8(255, 140, 0, 255));
+        }
+
+        std::string labelStr = MAIN_MENU_ITEMS[i].label;
+        if (i == 0 && AuthManager::isAuthenticated()) {
+            labelStr = "Amazon Account Connected (Logged In)";
+        }
+
+        Renderer::drawText(40, y + 26, titleColor, labelStr.c_str());
+        Renderer::drawText(40, y + 48, descColor, MAIN_MENU_ITEMS[i].description);
+    }
+
+    Renderer::drawFooter("(X) Select  |  (SELECT) Performance Telemetry Overlay");
+}
+
+void UIManager::renderLoginStub() {
+    Renderer::drawHeader("AMAZON LUNA - ACCOUNT AUTHENTICATION");
+
+    float boxX = 60.0f;
+    float boxY = 70.0f;
+    float boxW = 840.0f;
+    float boxH = 400.0f;
+
+    Renderer::drawRect(boxX, boxY, boxW, boxH, RGBA8(20, 26, 40, 255));
+    Renderer::drawRectOutline(boxX, boxY, boxW, boxH, 1.5f, RGBA8(0, 180, 240, 255));
+
+    Renderer::drawText(boxX + 30, boxY + 45, RGBA8(255, 255, 255, 255), "Login with Amazon (OAuth Device Authorization)");
+    Renderer::drawText(boxX + 30, boxY + 85, RGBA8(200, 210, 230, 255), "1. On your smartphone or PC, open the activation link:");
+    Renderer::drawText(boxX + 50, boxY + 115, RGBA8(255, 180, 0, 255), AuthManager::getVerificationUri().c_str());
+    Renderer::drawText(boxX + 30, boxY + 160, RGBA8(200, 210, 230, 255), "2. Enter the activation code below to authorize your PS Vita:");
+
+    // Code Box
+    Renderer::drawRect(boxX + 260, boxY + 190, 320, 60, RGBA8(30, 40, 65, 255));
+    Renderer::drawRectOutline(boxX + 260, boxY + 190, 320, 60, 2.0f, RGBA8(255, 140, 0, 255));
+    
+    std::string userCodeStr = AuthManager::getUserCode();
+    Renderer::drawText(boxX + 320, boxY + 230, RGBA8(255, 255, 255, 255), userCodeStr.c_str());
+
+    if (AuthManager::getAuthState() == AUTH_STATE_WAITING_FOR_USER) {
+        Renderer::drawTextFormatted(boxX + 30, boxY + 290, RGBA8(0, 230, 180, 255), "Time remaining: %d seconds", AuthManager::getTimeRemainingSec());
+    }
+
+    Renderer::drawTextFormatted(boxX + 30, boxY + 330, RGBA8(160, 175, 200, 255), "Status: %s", AuthManager::getStatusMessage().c_str());
+
+    Renderer::drawFooter("(X) Refresh Code  |  (O) Back to Main Menu");
+}
+
+void UIManager::renderCatalog() {
+    Renderer::drawHeader("AMAZON LUNA - GAME CATALOG");
+
+    float startY = 70.0f;
+    float cardWidth = 920.0f;
+    float cardHeight = 50.0f;
+    float spacing = 8.0f;
+
+    for (size_t i = 0; i < g_catalogGames.size() && i < 6; ++i) {
+        float y = startY + i * (cardHeight + spacing);
+        bool isSelected = ((int)i == m_selectedCatalogIndex);
+
+        uint32_t bgColor = isSelected ? RGBA8(35, 50, 85, 255) : RGBA8(20, 25, 40, 255);
+        uint32_t outlineColor = isSelected ? RGBA8(0, 220, 255, 255) : RGBA8(40, 50, 75, 255);
+
+        Renderer::drawRect(20, y, cardWidth, cardHeight, bgColor);
+        Renderer::drawRectOutline(20, y, cardWidth, cardHeight, isSelected ? 2.0f : 1.0f, outlineColor);
+
+        Renderer::drawText(40, y + 30, isSelected ? RGBA8(255, 255, 255, 255) : RGBA8(200, 210, 230, 255), g_catalogGames[i].title.c_str());
+        Renderer::drawTextFormatted(VITA_SCREEN_WIDTH - 260, y + 30, RGBA8(255, 160, 0, 255), "[%s]", g_catalogGames[i].channel.c_str());
+    }
+
+    Renderer::drawFooter("(X) Launch Stream  |  (O) Back");
+}
+
+void UIManager::renderStreamActive() {
+    Renderer::clearScreen(RGBA8(5, 8, 15, 255));
+
+    Renderer::drawRect(50, 50, VITA_SCREEN_WIDTH - 100, VITA_SCREEN_HEIGHT - 120, RGBA8(18, 28, 48, 255));
+    Renderer::drawRectOutline(50, 50, VITA_SCREEN_WIDTH - 100, VITA_SCREEN_HEIGHT - 120, 2.0f, RGBA8(255, 140, 0, 255));
+
+    Renderer::drawText(VITA_SCREEN_WIDTH / 2 - 160, VITA_SCREEN_HEIGHT / 2 - 10, RGBA8(255, 255, 255, 255), "[ STREAMING IN PROGRESS ]");
+    Renderer::drawText(VITA_SCREEN_WIDTH / 2 - 210, VITA_SCREEN_HEIGHT / 2 + 20, RGBA8(0, 220, 180, 255), "Hardware AVC Decoder: 1280x720 @ 60 FPS -> 960x544");
+
+    Renderer::drawFooter("(O) Disconnect Stream  |  (SELECT) Toggle Telemetry Overlay");
+}
+
+void UIManager::renderSettings() {
+    Renderer::drawHeader("AMAZON LUNA - STREAM SETTINGS");
+
+    float boxX = 40.0f;
+    float boxY = 70.0f;
+    float boxW = 880.0f;
+    float boxH = 400.0f;
+
+    Renderer::drawRect(boxX, boxY, boxW, boxH, RGBA8(18, 24, 38, 255));
+    Renderer::drawRectOutline(boxX, boxY, boxW, boxH, 1.5f, RGBA8(60, 75, 105, 255));
+
+    Renderer::drawText(boxX + 30, boxY + 50, RGBA8(180, 190, 210, 255), "Target Stream Resolution:");
+    Renderer::drawText(boxX + 350, boxY + 50, RGBA8(255, 180, 0, 255), "720p (1280x720 @ 60 FPS) [Luna Native Profile]");
+
+    bool sel1 = (m_selectedSettingIndex == 0);
+    Renderer::drawRect(boxX + 20, boxY + 80, boxW - 40, 50, sel1 ? RGBA8(35, 50, 85, 255) : RGBA8(25, 32, 50, 255));
+    Renderer::drawText(boxX + 30, boxY + 110, sel1 ? RGBA8(255, 255, 255, 255) : RGBA8(180, 190, 210, 255), "Target Bitrate Limit:");
+    Renderer::drawTextFormatted(boxX + 350, boxY + 110, RGBA8(0, 220, 255, 255), "%d Mbps  (Press X to cycle 5/10/15 Mbps)", m_targetBitrateMbps);
+
+    bool sel2 = (m_selectedSettingIndex == 1);
+    Renderer::drawRect(boxX + 20, boxY + 145, boxW - 40, 50, sel2 ? RGBA8(35, 50, 85, 255) : RGBA8(25, 32, 50, 255));
+    Renderer::drawText(boxX + 30, boxY + 175, sel2 ? RGBA8(255, 255, 255, 255) : RGBA8(180, 190, 210, 255), "PS Vita Hardware Decoder (SceVideodec):");
+    Renderer::drawText(boxX + 350, boxY + 175, m_enableHardwareDecoder ? RGBA8(0, 230, 140, 255) : RGBA8(255, 80, 80, 255), m_enableHardwareDecoder ? "ENABLED (Recommended)" : "DISABLED");
+
+    Renderer::drawFooter("(X) Change Setting  |  (O) Back to Main Menu");
+}

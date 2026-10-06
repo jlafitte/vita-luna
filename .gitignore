@@ -1,0 +1,17 @@
+# Build Directory & Binary Outputs
+build/
+*.vpk
+*.self
+*.velf
+*.o
+*.obj
+*.sfo
+
+# macOS System Files
+.DS_Store
+
+# Local Developer Secrets & Tokens
+ux0/
+tokens.dat
+client_id.txt
+*.log
