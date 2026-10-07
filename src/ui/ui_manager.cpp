@@ -75,7 +75,9 @@ void UIManager::update(float deltaTime, uint32_t buttonsPressed) {
                 m_selectedMenuIndex = (m_selectedMenuIndex - 1 + MAIN_MENU_COUNT) % MAIN_MENU_COUNT;
             } else if (buttonsPressed & SCE_CTRL_CROSS) {
                 m_currentState = MAIN_MENU_ITEMS[m_selectedMenuIndex].targetState;
-                if (m_currentState == STATE_LOGIN_STUB && !AuthManager::isAuthenticated()) {
+                if (m_currentState == STATE_CATALOG) {
+                    g_catalogGames = LunaAPI::fetchCatalog();
+                } else if (m_currentState == STATE_LOGIN_STUB && !AuthManager::isAuthenticated()) {
                     AuthManager::startDeviceAuth();
                 }
             }
@@ -88,6 +90,7 @@ void UIManager::update(float deltaTime, uint32_t buttonsPressed) {
                 m_currentState = STATE_MAIN_MENU;
             }
             if (AuthManager::isAuthenticated()) {
+                g_catalogGames = LunaAPI::fetchCatalog();
                 m_currentState = STATE_CATALOG;
             }
             break;
@@ -156,7 +159,7 @@ void UIManager::render() {
 
 void UIManager::renderMainMenu() {
     Renderer::drawHeader("AMAZON LUNA - MAIN MENU");
-    
+
     float startY = 80.0f;
     float cardWidth = 920.0f;
     float cardHeight = 65.0f;
@@ -209,7 +212,7 @@ void UIManager::renderLoginStub() {
     // Code Box
     Renderer::drawRect(boxX + 260, boxY + 190, 320, 60, RGBA8(30, 40, 65, 255));
     Renderer::drawRectOutline(boxX + 260, boxY + 190, 320, 60, 2.0f, RGBA8(255, 140, 0, 255));
-    
+
     std::string userCodeStr = AuthManager::getUserCode();
     Renderer::drawText(boxX + 320, boxY + 230, RGBA8(255, 255, 255, 255), userCodeStr.c_str());
 
@@ -225,26 +228,54 @@ void UIManager::renderLoginStub() {
 void UIManager::renderCatalog() {
     Renderer::drawHeader("AMAZON LUNA - GAME CATALOG");
 
-    float startY = 70.0f;
+    float startY = 65.0f;
     float cardWidth = 920.0f;
-    float cardHeight = 50.0f;
+    float cardHeight = 54.0f;
     float spacing = 8.0f;
+    int visibleCount = 6;
 
-    for (size_t i = 0; i < g_catalogGames.size() && i < 6; ++i) {
-        float y = startY + i * (cardHeight + spacing);
-        bool isSelected = ((int)i == m_selectedCatalogIndex);
+    int totalGames = (int)g_catalogGames.size();
 
-        uint32_t bgColor = isSelected ? RGBA8(35, 50, 85, 255) : RGBA8(20, 25, 40, 255);
-        uint32_t outlineColor = isSelected ? RGBA8(0, 220, 255, 255) : RGBA8(40, 50, 75, 255);
+    if (totalGames == 0) {
+        Renderer::drawRect(40.0f, 130.0f, 880.0f, 220.0f, RGBA8(20, 26, 40, 255));
+        Renderer::drawRectOutline(40.0f, 130.0f, 880.0f, 220.0f, 1.5f, RGBA8(80, 95, 125, 255));
 
-        Renderer::drawRect(20, y, cardWidth, cardHeight, bgColor);
-        Renderer::drawRectOutline(20, y, cardWidth, cardHeight, isSelected ? 2.0f : 1.0f, outlineColor);
+        Renderer::drawText(70, 180, RGBA8(255, 200, 100, 255), "No catalog items fetched from Amazon Luna API.");
+        if (AuthManager::isAuthenticated()) {
+            Renderer::drawText(70, 225, RGBA8(180, 195, 220, 255), "Account connected via LWA. Checking API endpoints returned 0 titles.");
+            Renderer::drawText(70, 265, RGBA8(140, 160, 190, 255), "Note: Luna requires specific web session tokens to fetch account library.");
+        } else {
+            Renderer::drawText(70, 225, RGBA8(180, 195, 220, 255), "Please connect your Amazon Account from Main Menu to query your library.");
+        }
+    } else {
+        int scrollOffset = 0;
+        if (m_selectedCatalogIndex >= visibleCount) {
+            scrollOffset = m_selectedCatalogIndex - visibleCount + 1;
+        }
 
-        Renderer::drawText(40, y + 30, isSelected ? RGBA8(255, 255, 255, 255) : RGBA8(200, 210, 230, 255), g_catalogGames[i].title.c_str());
-        Renderer::drawTextFormatted(VITA_SCREEN_WIDTH - 260, y + 30, RGBA8(255, 160, 0, 255), "[%s]", g_catalogGames[i].channel.c_str());
+        for (int i = 0; i < visibleCount && (i + scrollOffset) < totalGames; ++i) {
+            int gameIdx = i + scrollOffset;
+            float y = startY + i * (cardHeight + spacing);
+            bool isSelected = (gameIdx == m_selectedCatalogIndex);
+
+            uint32_t bgColor = isSelected ? RGBA8(35, 55, 95, 255) : RGBA8(20, 25, 40, 255);
+            uint32_t outlineColor = isSelected ? RGBA8(0, 220, 255, 255) : RGBA8(40, 50, 75, 255);
+
+            Renderer::drawRect(20, y, cardWidth, cardHeight, bgColor);
+            Renderer::drawRectOutline(20, y, cardWidth, cardHeight, isSelected ? 2.5f : 1.0f, outlineColor);
+
+            if (isSelected) {
+                Renderer::drawRect(20, y, 6, cardHeight, RGBA8(0, 220, 255, 255));
+            }
+
+            Renderer::drawText(40, y + 33, isSelected ? RGBA8(255, 255, 255, 255) : RGBA8(200, 210, 230, 255), g_catalogGames[gameIdx].title.c_str());
+            Renderer::drawTextFormatted(VITA_SCREEN_WIDTH - 240, y + 33, RGBA8(255, 160, 0, 255), "[%s]", g_catalogGames[gameIdx].channel.c_str());
+        }
     }
 
-    Renderer::drawFooter("(X) Launch Stream  |  (O) Back");
+    char footerBuf[128];
+    snprintf(footerBuf, sizeof(footerBuf), "(X) Launch Stream  |  (O) Back  |  Title %d of %d", totalGames > 0 ? (m_selectedCatalogIndex + 1) : 0, totalGames);
+    Renderer::drawFooter(footerBuf);
 }
 
 void UIManager::renderStreamActive() {
@@ -280,8 +311,8 @@ void UIManager::renderSettings() {
 
     bool sel2 = (m_selectedSettingIndex == 1);
     Renderer::drawRect(boxX + 20, boxY + 145, boxW - 40, 50, sel2 ? RGBA8(35, 50, 85, 255) : RGBA8(25, 32, 50, 255));
-    Renderer::drawText(boxX + 30, boxY + 175, sel2 ? RGBA8(255, 255, 255, 255) : RGBA8(180, 190, 210, 255), "PS Vita Hardware Decoder (SceVideodec):");
-    Renderer::drawText(boxX + 350, boxY + 175, m_enableHardwareDecoder ? RGBA8(0, 230, 140, 255) : RGBA8(255, 80, 80, 255), m_enableHardwareDecoder ? "ENABLED (Recommended)" : "DISABLED");
+    Renderer::drawText(boxX + 30, boxY + 175, sel2 ? RGBA8(255, 255, 255, 255) : RGBA8(180, 190, 210, 255), "Stream Decoder:");
+    Renderer::drawText(boxX + 350, boxY + 175, m_enableHardwareDecoder ? RGBA8(0, 230, 140, 255) : RGBA8(255, 80, 80, 255), m_enableHardwareDecoder ? "Hardware (Recommended)" : "Software");
 
     Renderer::drawFooter("(X) Change Setting  |  (O) Back to Main Menu");
 }

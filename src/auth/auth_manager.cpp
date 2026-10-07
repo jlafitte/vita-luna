@@ -9,10 +9,18 @@
 #include <psp2/io/fcntl.h>
 #endif
 
+#if __has_include("credentials.h")
+#include "credentials.h"
+#endif
+
+#ifndef LUNA_AMAZON_CLIENT_ID
+#define LUNA_AMAZON_CLIENT_ID "amzn1.application-oa2-client.bf3ab358c757423bb9140f5bd73f1a94"
+#endif
+
 // Default Amazon OAuth Endpoint
-static const char* AMAZON_OAUTH_CODE_URL  = "https://api.amazon.com/auth/o/oauth2/device/code";
-static const char* AMAZON_OAUTH_TOKEN_URL = "https://api.amazon.com/auth/o/oauth2/token";
-static const char* DEFAULT_CLIENT_ID       = "amzn1.application-oa2-client.vita_luna_client_id_stub";
+static const char* AMAZON_OAUTH_CODE_URL  = "https://api.amazon.com/auth/o2/create/codepair";
+static const char* AMAZON_OAUTH_TOKEN_URL = "https://api.amazon.com/auth/o2/token";
+static const char* DEFAULT_CLIENT_ID       = LUNA_AMAZON_CLIENT_ID;
 
 #define TOKEN_SAVE_PATH "ux0:data/vita-luna/tokens.dat"
 
@@ -22,11 +30,12 @@ AuthTokens AuthManager::m_tokens = { "", "", "", 0, 0, false };
 std::string AuthManager::m_deviceCode = "";
 std::string AuthManager::m_userCode = "";
 std::string AuthManager::m_verificationUri = "https://amazon.com/us/code";
-int AuthManager::m_expiresInSec = 0;
+int AuthManager::m_expiresInSec = 600;
 int AuthManager::m_pollIntervalSec = 5;
 float AuthManager::m_timerCountdown = 0.0f;
 float AuthManager::m_pollTimer = 0.0f;
 std::string AuthManager::m_statusMessage = "Unauthenticated";
+
 static std::string extractJsonValue(const std::string& json, const std::string& key) {
     if (json.empty() || key.empty()) return "";
     std::string searchKey = "\"" + key + "\":";
@@ -66,7 +75,7 @@ AuthState AuthManager::getAuthState() {
 }
 
 std::string AuthManager::getUserCode() {
-    return m_userCode.empty() ? "LUNA-VITA" : m_userCode;
+    return m_userCode.empty() ? "------" : m_userCode;
 }
 
 std::string AuthManager::getVerificationUri() {
@@ -90,7 +99,6 @@ std::string AuthManager::getAccessToken() {
 }
 
 void AuthManager::clearMemoryTokens() {
-    // Securely wipe memory buffers
     m_tokens.accessToken.clear();
     m_tokens.refreshToken.clear();
     m_tokens.tokenType.clear();
@@ -115,15 +123,6 @@ void AuthManager::logout() {
     LOG_INFO("User logged out and auth tokens removed.");
 }
 
-static std::string generateRandom6Code() {
-    static const char charset[] = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // Excludes ambiguous 0/O/1/I
-    std::string code = "";
-    for (int i = 0; i < 6; ++i) {
-        code += charset[rand() % (sizeof(charset) - 1)];
-    }
-    return code;
-}
-
 static std::string getAmazonClientId() {
 #if defined(__vita__)
     SceUID fd = sceIoOpen("ux0:data/vita-luna/client_id.txt", SCE_O_RDONLY, 0777);
@@ -133,7 +132,6 @@ static std::string getAmazonClientId() {
         sceIoClose(fd);
         if (len > 0) {
             buf[len] = '\0';
-            // Trim whitespace
             std::string id(buf);
             size_t end = id.find_first_of("\r\n ");
             if (end != std::string::npos) id = id.substr(0, end);
@@ -146,19 +144,16 @@ static std::string getAmazonClientId() {
 
 void AuthManager::startDeviceAuth() {
     m_state = AUTH_STATE_REQUESTING_CODE;
-    m_statusMessage = "Connecting to Amazon Auth Service...";
+    m_statusMessage = "Requesting live code from Amazon...";
 
     std::string clientId = getAmazonClientId();
-    bool isCustomClient = (clientId != DEFAULT_CLIENT_ID);
-
-    std::string postData = "client_id=" + clientId +
-                           "&scope=clouddrive%3Aread_other%20luna%3Astream" +
-                           "&response_type=device_code";
+    std::string postData = "client_id=" + clientId + "&scope=profile";
 
     std::map<std::string, std::string> headers = {
         { "Content-Type", "application/x-www-form-urlencoded" }
     };
 
+    LOG_INFO("Requesting live Amazon device code pair from %s...", AMAZON_OAUTH_CODE_URL);
     HttpResponse res = NetworkManager::sendHttpRequest(AMAZON_OAUTH_CODE_URL, "POST", postData.c_str(), headers);
 
     std::string parsedUserCode = extractJsonValue(res.body, "user_code");
@@ -167,41 +162,23 @@ void AuthManager::startDeviceAuth() {
 
     if (!parsedUserCode.empty()) {
         m_userCode = parsedUserCode;
-        m_statusMessage = "Live Amazon Code received! Approve on amazon.com/us/code";
-    } else {
-        // Generate dynamic 6-character random code for local demo/testing
-        m_userCode = generateRandom6Code();
-        if (isCustomClient) {
-            m_statusMessage = "Amazon API Error (" + std::to_string(res.statusCode) + "). Local Code: " + m_userCode;
-        } else {
-            m_statusMessage = "Code generated: " + m_userCode + " (Set client_id.txt for Live Auth)";
-        }
-    }
-
-    if (!parsedDeviceCode.empty()) {
         m_deviceCode = parsedDeviceCode;
+        m_verificationUri = !parsedUri.empty() ? parsedUri : "https://amazon.com/us/code";
+
+        std::string intervalStr = extractJsonValue(res.body, "interval");
+        int parsedInterval = !intervalStr.empty() ? atoi(intervalStr.c_str()) : 5;
+        m_pollIntervalSec = (parsedInterval > 0) ? parsedInterval : 5;
+
+        m_timerCountdown = 600.0f;
+        m_pollTimer = (float)m_pollIntervalSec;
+        m_state = AUTH_STATE_WAITING_FOR_USER;
+        m_statusMessage = "Live Amazon Code: " + m_userCode + ". Approve on amazon.com/us/code";
+        LOG_INFO("Received Amazon User Code: %s, Device Code: %s", m_userCode.c_str(), m_deviceCode.c_str());
     } else {
-        m_deviceCode = "dev_code_" + m_userCode;
+        m_statusMessage = "Failed to fetch Amazon code (HTTP " + std::to_string(res.statusCode) + "). Press X to retry.";
+        m_state = AUTH_STATE_ERROR;
+        LOG_ERROR("Failed to fetch Amazon codepair: %s", res.body.c_str());
     }
-
-    if (!parsedUri.empty()) {
-        m_verificationUri = parsedUri;
-    } else {
-        m_verificationUri = "https://amazon.com/us/code";
-    }
-
-    m_expiresInSec = 600;
-    m_pollIntervalSec = 5;
-
-    std::string intervalStr = extractJsonValue(res.body, "interval");
-    if (!intervalStr.empty()) {
-        int parsedInterval = atoi(intervalStr.c_str());
-        if (parsedInterval > 0) m_pollIntervalSec = parsedInterval;
-    }
-
-    m_timerCountdown = (float)m_expiresInSec;
-    m_pollTimer = (float)m_pollIntervalSec;
-    m_state = AUTH_STATE_WAITING_FOR_USER;
 }
 
 void AuthManager::update(float deltaTime) {
@@ -210,7 +187,7 @@ void AuthManager::update(float deltaTime) {
     m_timerCountdown -= deltaTime;
     if (m_timerCountdown <= 0.0f) {
         m_state = AUTH_STATE_EXPIRED;
-        m_statusMessage = "Device code expired. Please request a new code.";
+        m_statusMessage = "Device code expired. Press X to request a new code.";
         return;
     }
 
@@ -218,11 +195,11 @@ void AuthManager::update(float deltaTime) {
     if (m_pollTimer <= 0.0f) {
         m_pollTimer = (float)m_pollIntervalSec;
 
-        // Poll Amazon Token Endpoint
-        std::string postData = std::string("grant_type=device_code") +
-                               "&device_code=" + m_deviceCode +
+        std::string clientId = getAmazonClientId();
+        std::string postData = "grant_type=device_code"
+                               "&client_id=" + clientId +
                                "&user_code=" + m_userCode +
-                               "&client_id=" + std::string(DEFAULT_CLIENT_ID);
+                               "&device_code=" + m_deviceCode;
 
         std::map<std::string, std::string> headers = {
             { "Content-Type", "application/x-www-form-urlencoded" }
@@ -230,9 +207,12 @@ void AuthManager::update(float deltaTime) {
 
         HttpResponse res = NetworkManager::sendHttpRequest(AMAZON_OAUTH_TOKEN_URL, "POST", postData.c_str(), headers);
 
-        if (res.success) {
-            m_tokens.accessToken = "amzn1.bearer.at_luna_vita_mock_access_token_99812";
-            m_tokens.refreshToken = "amzn1.bearer.rt_luna_vita_mock_refresh_token_77123";
+        std::string accessToken = extractJsonValue(res.body, "access_token");
+        std::string refreshToken = extractJsonValue(res.body, "refresh_token");
+
+        if (!accessToken.empty()) {
+            m_tokens.accessToken = accessToken;
+            m_tokens.refreshToken = refreshToken;
             m_tokens.tokenType = "bearer";
             m_tokens.expiresIn = 3600;
             m_tokens.isValid = true;
@@ -240,7 +220,19 @@ void AuthManager::update(float deltaTime) {
             saveTokens(m_tokens);
             m_state = AUTH_STATE_AUTHENTICATED;
             m_statusMessage = "Successfully connected Amazon Account!";
-            LOG_INFO("OAuth Device Authorization completed successfully.");
+            LOG_INFO("Amazon OAuth Device Authorization completed successfully!");
+        } else {
+            std::string errStr = extractJsonValue(res.body, "error");
+            if (errStr == "authorization_pending") {
+                m_statusMessage = "Polling Amazon... Open amazon.com/us/code & enter " + m_userCode;
+            } else if (errStr == "slow_down") {
+                m_pollIntervalSec += 5;
+                m_statusMessage = "Slow down polling (" + std::to_string(m_pollIntervalSec) + "s). Enter " + m_userCode;
+            } else if (!errStr.empty()) {
+                m_statusMessage = "Waiting for approval (" + errStr + "). Code: " + m_userCode;
+            } else {
+                m_statusMessage = "Polling Amazon Auth Service (HTTP " + std::to_string(res.statusCode) + ")...";
+            }
         }
     }
 }
@@ -250,17 +242,25 @@ bool AuthManager::loadSavedTokens() {
     SceUID fd = sceIoOpen(TOKEN_SAVE_PATH, SCE_O_RDONLY, 0777);
     if (fd < 0) return false;
 
-    char buffer[512];
+    char buffer[1024];
     int bytesRead = sceIoRead(fd, buffer, sizeof(buffer) - 1);
     sceIoClose(fd);
 
     if (bytesRead > 0) {
         buffer[bytesRead] = '\0';
-        if (strstr(buffer, "bearer")) {
-            m_tokens.accessToken = "amzn1.bearer.at_restored_session";
-            m_tokens.tokenType = "bearer";
-            m_tokens.isValid = true;
-            return true;
+        std::string data(buffer);
+        size_t tokenPos = data.find("access_token=");
+        if (tokenPos != std::string::npos) {
+            tokenPos += 13;
+            size_t endPos = data.find_first_of("\r\n", tokenPos);
+            std::string token = (endPos != std::string::npos) ? data.substr(tokenPos, endPos - tokenPos) : data.substr(tokenPos);
+            if (!token.empty()) {
+                m_tokens.accessToken = token;
+                m_tokens.tokenType = "bearer";
+                m_tokens.isValid = true;
+                LOG_INFO("Successfully restored Amazon access token from disk.");
+                return true;
+            }
         }
     }
 #endif

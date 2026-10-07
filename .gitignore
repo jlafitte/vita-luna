@@ -13,5 +13,5 @@ build/
 # Local Developer Secrets & Tokens
 ux0/
 tokens.dat
-client_id.txt
+include/credentials.h
 *.log
