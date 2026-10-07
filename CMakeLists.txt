@@ -53,6 +53,7 @@ target_link_libraries(vita-luna
     SceHttp_stub
     SceAudio_stub
     SceAvPlayer_stub
+    SceVideodec_stub
 )
 
 if(COMMAND vita_create_self)

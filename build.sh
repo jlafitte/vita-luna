@@ -20,3 +20,8 @@ echo ""
 echo "=========================================================="
 echo " SUCCESS! Built: $(pwd)/vita-luna.vpk"
 echo "=========================================================="
+
+if [ -n "$1" ]; then
+    echo ""
+    python3 ../scripts/deploy_vitacompanion.py "$1" "$(pwd)/vita-luna.vpk"
+fi

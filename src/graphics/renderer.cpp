@@ -85,7 +85,7 @@ void Renderer::drawRectOutline(float x, float y, float width, float height, floa
 }
 
 void Renderer::drawText(float x, float y, uint32_t color, const char* text) {
-    if (!text) return;
+    if (!text || text[0] == '\0') return;
 
 #if defined(__vita__)
     if (g_font) {
@@ -97,13 +97,18 @@ void Renderer::drawText(float x, float y, uint32_t color, const char* text) {
 }
 
 void Renderer::drawTextFormatted(float x, float y, uint32_t color, const char* format, ...) {
+    if (!format || format[0] == '\0') return;
+
     char buffer[512];
     va_list args;
     va_start(args, format);
-    vsnprintf(buffer, sizeof(buffer), format, args);
+    int len = vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
 
-    drawText(x, y, color, buffer);
+    if (len > 0) {
+        buffer[sizeof(buffer) - 1] = '\0';
+        drawText(x, y, color, buffer);
+    }
 }
 
 void Renderer::drawHeader(const char* title) {
