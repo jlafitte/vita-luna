@@ -7,6 +7,8 @@
 #include "video/h264_decoder.h"
 #include "net/websocket_client.h"
 #include "audio/audio_manager.h"
+#include "input/input_manager.h"
+#include "net/rtp_receiver.h"
 
 #if defined(__vita__)
 #include <psp2/ctrl.h>
@@ -41,17 +43,21 @@ static const MenuItem MAIN_MENU_ITEMS[] = {
 static const int MAIN_MENU_COUNT = sizeof(MAIN_MENU_ITEMS) / sizeof(MAIN_MENU_ITEMS[0]);
 
 static void startStreamSession(const std::string& gameId) {
-    LOG_INFO("Starting Phase 3 Stream Pipeline for game: %s", gameId.c_str());
+    LOG_INFO("Starting Phase 4 Stream Pipeline for game: %s", gameId.c_str());
     LunaAPI::requestStreamSession(gameId, g_activeSession);
     WebSocketClient::init();
     WebSocketClient::connect(g_activeSession.streamUrl);
     H264Decoder::init(g_activeSession.targetWidth, g_activeSession.targetHeight);
     AudioManager::init(48000, 2);
+    InputManager::init();
+    RtpReceiver::init(g_activeSession.rtpVideoPort, g_activeSession.rtpAudioPort);
     DiagnosticOverlay::setStreamStats(g_activeSession.targetWidth, g_activeSession.targetHeight, g_activeSession.targetFps, 10000, 2.4f);
 }
 
 static void stopStreamSession() {
     LOG_INFO("Stopping Stream Pipeline.");
+    RtpReceiver::shutdown();
+    InputManager::shutdown();
     H264Decoder::shutdown();
     AudioManager::shutdown();
     WebSocketClient::disconnect();
@@ -141,11 +147,12 @@ void UIManager::update(float deltaTime, uint32_t buttonsPressed) {
             break;
 
         case STATE_STREAM_ACTIVE:
-            if (H264Decoder::isInitialized()) {
-                static const uint8_t sampleNalHeader[4] = { 0x00, 0x00, 0x00, 0x01 };
-                DecodedFrame frame;
-                H264Decoder::decodeNALUnit(sampleNalHeader, sizeof(sampleNalHeader), frame);
-            }
+            // 1. Ingest RTP UDP video NALs & audio packets from streaming server
+            RtpReceiver::poll();
+
+            // 2. Poll PS Vita controller & touch inputs and stream to Luna at 60Hz
+            InputManager::poll();
+            InputManager::sendInputPacket();
 
             if (buttonsPressed & SCE_CTRL_CIRCLE) {
                 stopStreamSession();
@@ -194,6 +201,7 @@ void UIManager::render() {
 }
 
 void UIManager::renderMainMenu() {
+    Renderer::drawBackground();
     Renderer::drawHeader("AMAZON LUNA - MAIN MENU");
 
     float startY = 80.0f;
@@ -230,6 +238,7 @@ void UIManager::renderMainMenu() {
 }
 
 void UIManager::renderLoginStub() {
+    Renderer::drawBackground();
     Renderer::drawHeader("AMAZON LUNA - ACCOUNT AUTHENTICATION");
 
     float boxX = 60.0f;
@@ -262,6 +271,7 @@ void UIManager::renderLoginStub() {
 }
 
 void UIManager::renderCatalog() {
+    Renderer::drawBackground();
     Renderer::drawHeader("AMAZON LUNA - GAME CATALOG");
 
     std::vector<LunaGame> games = g_catalogGames;
@@ -341,17 +351,25 @@ void UIManager::renderStreamActive() {
     Renderer::drawTextFormatted(vpX + 25.0f, vpY + 75.0f, RGBA8(0, 230, 180, 255), "Hardware AVC Decoder (SceVideodec): 1280x720 @ 60 FPS -> 960x544");
 
     // Live WebSockets & Decoder status counters
-    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 120.0f, RGBA8(255, 180, 0, 255), "Signaling Status: %s", WebSocketClient::getStatusMessage().c_str());
-    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 155.0f, RGBA8(200, 215, 240, 255), "Decoded Frames: %u  |  Avg Decode Latency: %.1f ms", frameCount, H264Decoder::getAverageDecodeTimeMs());
-    Renderer::drawText(vpX + 25.0f, vpY + 190.0f, RGBA8(160, 230, 160, 255), "Audio Output (SceAudio): 48000 Hz Stereo PCM Active");
+    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 115.0f, RGBA8(255, 180, 0, 255), "Signaling Status: %s", WebSocketClient::getStatusMessage().c_str());
+    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 145.0f, RGBA8(200, 215, 240, 255), "Decoded Frames: %u  |  Avg Decode Latency: %.1f ms", frameCount, H264Decoder::getAverageDecodeTimeMs());
+
+    // Phase 4 Live RTP & Input Telemetry
+    const RtpStreamMetrics& rtpStats = RtpReceiver::getMetrics();
+    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 175.0f, RGBA8(0, 220, 255, 255), "RTP Stream Receiver: %u pkts | Loss: %.1f%% | Bitrate: %u kbps", rtpStats.packetsReceived, rtpStats.packetLossPercent, rtpStats.currentBitrateKbps);
+
+    const LunaGamepadState& padState = InputManager::getState();
+    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 205.0f, RGBA8(160, 230, 160, 255), "Input Stream (60Hz): %u pkts | Latency: %.1f ms | Buttons: 0x%04X", InputManager::getPacketsSentCount(), InputManager::getLastInputLatencyMs(), padState.buttons);
+    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 235.0f, RGBA8(255, 215, 100, 255), "Sticks: L(%.2f, %.2f) R(%.2f, %.2f)  |  Triggers: LT:%.1f RT:%.1f", padState.leftStickX, padState.leftStickY, padState.rightStickX, padState.rightStickY, padState.leftTrigger, padState.rightTrigger);
 
     // Control hint inside video viewport
-    Renderer::drawText(vpX + 25.0f, vpY + 245.0f, RGBA8(160, 175, 205, 255), "Press SELECT to toggle Live Telemetry & Performance HUD");
+    Renderer::drawText(vpX + 25.0f, vpY + 270.0f, RGBA8(160, 175, 205, 255), "Press SELECT to toggle Live Performance HUD  |  (O) to Exit Stream");
 
     Renderer::drawFooter("(O) Disconnect Stream Session  |  (SELECT) Toggle Diagnostic Overlay");
 }
 
 void UIManager::renderSettings() {
+    Renderer::drawBackground();
     Renderer::drawHeader("AMAZON LUNA - STREAM SETTINGS");
 
     float boxX = 40.0f;

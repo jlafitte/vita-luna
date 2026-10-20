@@ -32,25 +32,27 @@ def deploy(vita_ip, vpk_path, title_id="LUNA00001"):
     print(f"-> Terminating active instance of {title_id}...")
     send_cmd(vita_ip, 1338, f"kill {title_id}")
 
-    # 2. FTP Connection & Upload (eboot.bin hot-reload + VPK)
-    ftp_ports = [1337, 21]
-    ftp_connected = False
+    # 2. Connect directly to VitaCompanion native FTP daemon (Port 1337)
+    import time
+    time.sleep(0.5)  # Allow process to terminate and release file handles
     ftp = FTP()
+    ftp_connected = False
 
-    for port in ftp_ports:
+    for port in [1337, 21]:
         try:
-            print(f"-> Connecting to FTP at {vita_ip}:{port}...")
-            ftp.connect(vita_ip, port, timeout=10)
+            print(f"-> Connecting to VitaCompanion FTP daemon at {vita_ip}:{port}...")
+            ftp.connect(vita_ip, port, timeout=5)
             ftp.login()
             ftp.set_pasv(True)
             ftp_connected = True
-            print(f"-> Connected to FTP on port {port}.")
+            print(f"-> Connected to FTP on port {port} ({ftp.getwelcome().strip()}).")
             break
         except Exception as e:
-            print(f"   Port {port} unavailable ({e})")
+            pass
 
     if not ftp_connected:
-        print("Error: Could not connect to FTP server on PS Vita. Ensure Wi-Fi is connected.")
+        print(f"Error: Could not connect to FTP daemon on {vita_ip} (tested ports 1337, 21).")
+        print("Ensure VitaCompanion is running and Wi-Fi is connected.")
         sys.exit(1)
 
     eboot_path = os.path.join(os.path.dirname(vpk_path), "vita-luna.self")
@@ -69,6 +71,29 @@ def deploy(vita_ip, vpk_path, title_id="LUNA00001"):
             print("-> Hot-reload executable update complete!")
         except Exception as e:
             print(f"   Note updating ux0:/app/{title_id}/eboot.bin: {e}")
+
+    # Sync sce_sys assets to ux0:/app/{title_id}/sce_sys/ and ur0:/appmeta/{title_id}/
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sce_sys_dir = os.path.join(project_root, "sce_sys")
+    if os.path.exists(sce_sys_dir):
+        print(f"-> Syncing LiveArea assets to ux0:/app/{title_id}/sce_sys/ and ur0:/appmeta/{title_id}/...")
+        for base_dest in [f"ux0:/app/{title_id}/sce_sys", f"ur0:/appmeta/{title_id}"]:
+            for root, dirs, files in os.walk(sce_sys_dir):
+                rel_dir = os.path.relpath(root, sce_sys_dir)
+                remote_dir = base_dest if rel_dir == "." else f"{base_dest}/{rel_dir.replace(os.sep, '/')}"
+                try:
+                    ftp.mkd(remote_dir)
+                except Exception:
+                    pass
+                for file in files:
+                    local_file = os.path.join(root, file)
+                    remote_file = f"{remote_dir}/{file}"
+                    try:
+                        with open(local_file, 'rb') as f:
+                            ftp.storbinary(f"STOR {remote_file}", f)
+                    except Exception as e:
+                        print(f"   Note syncing {file}: {e}")
+        print("-> LiveArea assets sync complete!")
 
     # Upload full VPK to ux0:data/
     print(f"-> Uploading VPK to ux0:/data/{vpk_filename}...")

@@ -16,6 +16,7 @@ public:
     static void endFrame();
     
     static void clearScreen(uint32_t color);
+    static void drawBackground();
     static void drawRect(float x, float y, float width, float height, uint32_t color);
     static void drawRectOutline(float x, float y, float width, float height, float thickness, uint32_t color);
     static void drawText(float x, float y, uint32_t color, const char* text);

@@ -68,6 +68,10 @@ void Renderer::clearScreen(uint32_t color) {
 #endif
 }
 
+void Renderer::drawBackground() {
+    clearScreen(RGBA8(15, 17, 26, 255));
+}
+
 void Renderer::drawRect(float x, float y, float width, float height, uint32_t color) {
 #if defined(__vita__)
     vita2d_draw_rectangle(x, y, width, height, color);
