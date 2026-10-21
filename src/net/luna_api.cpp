@@ -2,6 +2,8 @@
 #include "net/network_manager.h"
 #include "auth/auth_manager.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 bool LunaAPI::m_initialized = false;
 
@@ -116,8 +118,9 @@ std::vector<LunaGame> LunaAPI::fetchCatalog() {
 }
 
 bool LunaAPI::requestStreamSession(const std::string& gameId, LunaStreamSession& outSession) {
-    LOG_INFO("Requesting Luna stream session for game: %s", gameId.c_str());
+    LOG_INFO("Requesting live Luna stream session for game: %s", gameId.c_str());
 
+    // Default configuration (Luna 720p60 profile)
     outSession.sessionId = "session_luna_" + gameId + "_720p60";
     outSession.streamUrl = "wss://stream.luna.amazon.com/webrtc/v1/session";
     outSession.rtpHost = "stream-us-east-1.luna.amazon.com";
@@ -128,6 +131,55 @@ bool LunaAPI::requestStreamSession(const std::string& gameId, LunaStreamSession&
     outSession.targetHeight = LUNA_TARGET_HEIGHT;
     outSession.targetFps = LUNA_TARGET_FPS;
     outSession.isConnected = true;
+    outSession.hasSrtpKeys = false;
+    memset(outSession.srtpMasterKey, 0, sizeof(outSession.srtpMasterKey));
+    memset(outSession.srtpMasterSalt, 0, sizeof(outSession.srtpMasterSalt));
+
+    if (AuthManager::isAuthenticated()) {
+        std::map<std::string, std::string> headers = {
+            { "Authorization", "Bearer " + AuthManager::getAccessToken() },
+            { "Content-Type", "application/json" },
+            { "Accept", "application/json" }
+        };
+
+        char postBody[512];
+        snprintf(postBody, sizeof(postBody),
+            "{\"gameId\":\"%s\",\"client\":\"vita-luna\",\"streamProfile\":{\"width\":%d,\"height\":%d,\"fps\":%d,\"codec\":\"H264\"}}",
+            gameId.c_str(), LUNA_TARGET_WIDTH, LUNA_TARGET_HEIGHT, LUNA_TARGET_FPS);
+
+        const char* endpoints[] = {
+            "https://api.luna.amazon.com/v1/sessions",
+            "https://luna.amazon.com/api/session/start",
+            "https://stream.luna.amazon.com/v1/session"
+        };
+
+        for (const char* url : endpoints) {
+            LOG_INFO("Sending live session allocation POST to %s...", url);
+            HttpResponse res = NetworkManager::sendHttpRequest(url, "POST", postBody, headers);
+            if (res.success && res.statusCode >= 200 && res.statusCode < 300) {
+                LOG_INFO("Received active session allocation response from %s (HTTP %d, %zu bytes)", url, res.statusCode, res.body.length());
+
+                std::string sessId = extractJsonField(res.body, "sessionId");
+                if (!sessId.empty()) outSession.sessionId = sessId;
+
+                std::string streamUrl = extractJsonField(res.body, "streamUrl");
+                if (!streamUrl.empty()) outSession.streamUrl = streamUrl;
+
+                std::string host = extractJsonField(res.body, "rtpHost");
+                if (!host.empty()) outSession.rtpHost = host;
+
+                std::string vPortStr = extractJsonField(res.body, "videoPort");
+                if (!vPortStr.empty()) outSession.rtpVideoPort = atoi(vPortStr.c_str());
+
+                std::string aPortStr = extractJsonField(res.body, "audioPort");
+                if (!aPortStr.empty()) outSession.rtpAudioPort = atoi(aPortStr.c_str());
+
+                break;
+            } else {
+                LOG_WARN("Session start request to %s returned HTTP %d", url, res.statusCode);
+            }
+        }
+    }
 
     return true;
 }

@@ -43,14 +43,25 @@ static const MenuItem MAIN_MENU_ITEMS[] = {
 static const int MAIN_MENU_COUNT = sizeof(MAIN_MENU_ITEMS) / sizeof(MAIN_MENU_ITEMS[0]);
 
 static void startStreamSession(const std::string& gameId) {
-    LOG_INFO("Starting Phase 4 Stream Pipeline for game: %s", gameId.c_str());
+    LOG_INFO("Starting Phase 5 Stream Pipeline for game: %s", gameId.c_str());
     LunaAPI::requestStreamSession(gameId, g_activeSession);
-    WebSocketClient::init();
-    WebSocketClient::connect(g_activeSession.streamUrl);
+    Renderer::createStreamTexture(g_activeSession.targetWidth, g_activeSession.targetHeight);
+    WebSocketClient::startSignalingSession(
+        g_activeSession.streamUrl,
+        AuthManager::getAccessToken(),
+        gameId,
+        g_activeSession.targetWidth,
+        g_activeSession.targetHeight,
+        g_activeSession.targetFps,
+        10000
+    );
     H264Decoder::init(g_activeSession.targetWidth, g_activeSession.targetHeight);
     AudioManager::init(48000, 2);
     InputManager::init();
     RtpReceiver::init(g_activeSession.rtpVideoPort, g_activeSession.rtpAudioPort);
+    if (g_activeSession.hasSrtpKeys) {
+        RtpReceiver::configureSrtpKeys(g_activeSession.srtpMasterKey, g_activeSession.srtpMasterSalt);
+    }
     DiagnosticOverlay::setStreamStats(g_activeSession.targetWidth, g_activeSession.targetHeight, g_activeSession.targetFps, 10000, 2.4f);
 }
 
@@ -62,6 +73,7 @@ static void stopStreamSession() {
     AudioManager::shutdown();
     WebSocketClient::disconnect();
     WebSocketClient::shutdown();
+    Renderer::destroyStreamTexture();
     LunaAPI::closeStreamSession(g_activeSession);
 }
 
@@ -147,12 +159,21 @@ void UIManager::update(float deltaTime, uint32_t buttonsPressed) {
             break;
 
         case STATE_STREAM_ACTIVE:
-            // 1. Ingest RTP UDP video NALs & audio packets from streaming server
+            // 1. Advance WebRTC signaling handshake (Auth -> SDP Offer/Answer -> ICE exchange)
+            WebSocketClient::update(deltaTime);
+
+            // 2. Ingest RTP UDP video NALs & audio packets from streaming server
             RtpReceiver::poll();
 
-            // 2. Poll PS Vita controller & touch inputs and stream to Luna at 60Hz
+            // 3. Pump audio jitter buffer directly to PS Vita DMA audio hardware
+            AudioManager::pumpAudio();
+
+            // 4. Poll PS Vita controller & touch inputs and stream to Luna at 60Hz
             InputManager::poll();
             InputManager::sendInputPacket();
+
+            // 5. Dynamic stream bitrate sync based on network telemetry
+            m_targetBitrateMbps = RtpReceiver::getRecommendedBitrateMbps();
 
             if (buttonsPressed & SCE_CTRL_CIRCLE) {
                 stopStreamSession();
@@ -333,37 +354,42 @@ void UIManager::renderStreamActive() {
     Renderer::clearScreen(RGBA8(8, 12, 22, 255));
 
     // Dynamic 720p -> 960x544 Video Frame Viewport
-    float vpX = 40.0f;
-    float vpY = 50.0f;
-    float vpW = VITA_SCREEN_WIDTH - 80.0f;
-    float vpH = VITA_SCREEN_HEIGHT - 110.0f;
+    float vpX = 20.0f;
+    float vpY = 30.0f;
+    float vpW = VITA_SCREEN_WIDTH - 40.0f;
+    float vpH = VITA_SCREEN_HEIGHT - 70.0f;
 
-    Renderer::drawRect(vpX, vpY, vpW, vpH, RGBA8(15, 22, 38, 255));
-    Renderer::drawRectOutline(vpX, vpY, vpW, vpH, 2.0f, RGBA8(0, 220, 255, 255));
+    // 1. Blit the live hardware decoded H.264 video stream texture scaled to the screen
+    Renderer::drawStreamTexture(vpX, vpY, vpW, vpH);
+    Renderer::drawRectOutline(vpX, vpY, vpW, vpH, 2.0f, RGBA8(0, 220, 255, 200));
 
-    // Moving video frame bar (60 FPS animation)
-    uint32_t frameCount = H264Decoder::getDecodedFrameCount();
-    float animX = vpX + (float)((frameCount * 8) % (int)(vpW - 60.0f));
-    Renderer::drawRect(animX, vpY + 10.0f, 60.0f, vpH - 20.0f, RGBA8(0, 180, 255, 40));
+    // 2. Translucent telemetry banner overlay
+    Renderer::drawRect(vpX, vpY, vpW, 210.0f, RGBA8(12, 16, 28, 190));
+    Renderer::drawRect(vpX, vpY + 208.0f, vpW, 2.0f, RGBA8(0, 220, 255, 80));
 
     // Header info on video viewport
-    Renderer::drawText(vpX + 25.0f, vpY + 40.0f, RGBA8(255, 255, 255, 255), "[ AMAZON LUNA - STREAM PLAYBACK ACTIVE ]");
-    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 75.0f, RGBA8(0, 230, 180, 255), "Hardware AVC Decoder (SceVideodec): 1280x720 @ 60 FPS -> 960x544");
+    uint32_t frameCount = H264Decoder::getDecodedFrameCount();
+    Renderer::drawText(vpX + 20.0f, vpY + 24.0f, RGBA8(255, 255, 255, 255), "[ AMAZON LUNA - STREAM PLAYBACK ACTIVE ]");
+    Renderer::drawTextFormatted(vpX + 20.0f, vpY + 46.0f, RGBA8(0, 230, 180, 255), "Hardware AVC Decoder (SceVideodec): 1280x720 @ 60 FPS -> 960x544");
 
     // Live WebSockets & Decoder status counters
-    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 115.0f, RGBA8(255, 180, 0, 255), "Signaling Status: %s", WebSocketClient::getStatusMessage().c_str());
-    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 145.0f, RGBA8(200, 215, 240, 255), "Decoded Frames: %u  |  Avg Decode Latency: %.1f ms", frameCount, H264Decoder::getAverageDecodeTimeMs());
+    Renderer::drawTextFormatted(vpX + 20.0f, vpY + 68.0f, RGBA8(255, 180, 0, 255), "Signaling: %s", WebSocketClient::getStatusMessage().c_str());
+    Renderer::drawTextFormatted(vpX + 20.0f, vpY + 90.0f, RGBA8(200, 215, 240, 255), "Decoded Frames: %u  |  Avg Decode Latency: %.1f ms", frameCount, H264Decoder::getAverageDecodeTimeMs());
 
-    // Phase 4 Live RTP & Input Telemetry
+    // Live RTP & Dynamic Bitrate Telemetry
     const RtpStreamMetrics& rtpStats = RtpReceiver::getMetrics();
-    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 175.0f, RGBA8(0, 220, 255, 255), "RTP Stream Receiver: %u pkts | Loss: %.1f%% | Bitrate: %u kbps", rtpStats.packetsReceived, rtpStats.packetLossPercent, rtpStats.currentBitrateKbps);
+    Renderer::drawTextFormatted(vpX + 20.0f, vpY + 112.0f, RGBA8(0, 220, 255, 255), "RTP Stream: %u pkts | Loss: %.1f%% | Target: %d Mbps | Rate: %u kbps",
+        rtpStats.packetsReceived, rtpStats.packetLossPercent, m_targetBitrateMbps, rtpStats.currentBitrateKbps);
+
+    // Audio Subsystem Telemetry
+    Renderer::drawTextFormatted(vpX + 20.0f, vpY + 134.0f, RGBA8(180, 160, 255, 255), "Audio (48kHz Stereo): %u frames buffered  |  Underruns: %u",
+        static_cast<unsigned int>(AudioManager::getBufferedFrameCount()), AudioManager::getUnderrunCount());
 
     const LunaGamepadState& padState = InputManager::getState();
-    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 205.0f, RGBA8(160, 230, 160, 255), "Input Stream (60Hz): %u pkts | Latency: %.1f ms | Buttons: 0x%04X", InputManager::getPacketsSentCount(), InputManager::getLastInputLatencyMs(), padState.buttons);
-    Renderer::drawTextFormatted(vpX + 25.0f, vpY + 235.0f, RGBA8(255, 215, 100, 255), "Sticks: L(%.2f, %.2f) R(%.2f, %.2f)  |  Triggers: LT:%.1f RT:%.1f", padState.leftStickX, padState.leftStickY, padState.rightStickX, padState.rightStickY, padState.leftTrigger, padState.rightTrigger);
-
-    // Control hint inside video viewport
-    Renderer::drawText(vpX + 25.0f, vpY + 270.0f, RGBA8(160, 175, 205, 255), "Press SELECT to toggle Live Performance HUD  |  (O) to Exit Stream");
+    Renderer::drawTextFormatted(vpX + 20.0f, vpY + 156.0f, RGBA8(160, 230, 160, 255), "Input Stream (60Hz): %u pkts | Latency: %.1f ms | Buttons: 0x%04X",
+        InputManager::getPacketsSentCount(), InputManager::getLastInputLatencyMs(), padState.buttons);
+    Renderer::drawTextFormatted(vpX + 20.0f, vpY + 178.0f, RGBA8(255, 215, 100, 255), "Sticks: L(%.2f, %.2f) R(%.2f, %.2f)  |  Triggers: LT:%.1f RT:%.1f",
+        padState.leftStickX, padState.leftStickY, padState.rightStickX, padState.rightStickY, padState.leftTrigger, padState.rightTrigger);
 
     Renderer::drawFooter("(O) Disconnect Stream Session  |  (SELECT) Toggle Diagnostic Overlay");
 }

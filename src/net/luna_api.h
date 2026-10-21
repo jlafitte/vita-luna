@@ -25,6 +25,9 @@ struct LunaStreamSession {
     int targetHeight;
     int targetFps;
     bool isConnected;
+    bool hasSrtpKeys;
+    uint8_t srtpMasterKey[16];
+    uint8_t srtpMasterSalt[14];
 };
 
 class LunaAPI {
