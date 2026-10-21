@@ -16,3 +16,4 @@ tokens.dat
 include/credentials.h
 *.log
 assets/
+screenshots/
