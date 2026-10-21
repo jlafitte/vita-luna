@@ -13,6 +13,8 @@ project(vita-luna C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--defsym,__sce_headroom=0x10000")
+
 include("${VITASDK}/share/vita.cmake" OPTIONAL)
 
 set(VITA_APP_NAME "Amazon Luna Client")
@@ -54,10 +56,11 @@ target_link_libraries(vita-luna
     SceAudio_stub
     SceAvPlayer_stub
     SceVideodec_stub
+    SceScreenShot_stub
 )
 
 if(COMMAND vita_create_self)
-    vita_create_self(vita-luna.self vita-luna)
+    vita_create_self(vita-luna.self vita-luna UNSAFE)
     vita_create_vpk(vita-luna.vpk ${VITA_TITLEID} vita-luna.self
         NAME ${VITA_APP_NAME}
         VERSION ${VITA_VERSION}

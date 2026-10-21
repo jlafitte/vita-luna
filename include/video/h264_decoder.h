@@ -24,6 +24,22 @@ public:
 
     static uint32_t getDecodedFrameCount();
     static float getAverageDecodeTimeMs();
+    static const DecodedFrame& getLatestFrame();
+    static bool generateTestFrame(uint32_t frameIndex);
+
+    // Hardware AVC Diagnostic Telemetry
+    static uint32_t getNalUnitCount();
+    static uint32_t getLastNalType();
+    static uint32_t getLastNalSize();
+    static int getLastDecodeRet();
+    static uint32_t getLastNumOfOutput();
+    static uint32_t getDecoderHandle();
+    static int getInitLibRet();
+    static int getCreateDecoderRet();
+    static int getQueryMemSizeRet();
+    static uint32_t getQueriedFrameMemSize();
+    static int getMemBlockId();
+    static bool hasContiguousBuffers();
 
 private:
     static bool m_initialized;
@@ -32,8 +48,21 @@ private:
     static uint32_t m_decodedFrameCount;
     static float m_lastDecodeTimeMs;
 
+    static uint32_t m_nalUnitsCount;
+    static uint32_t m_lastNalType;
+    static uint32_t m_lastNalSize;
+    static int m_lastDecodeRet;
+    static uint32_t m_lastNumOfOutput;
+    static int m_initLibRet;
+    static int m_createDecoderRet;
+    static int m_queryMemSizeRet;
+    static uint32_t m_queriedFrameMemSize;
+    static int m_memBlockIdVal;
+
     static void* m_frameBufferMemory;
     static uint32_t m_decoderHandle;
+    static DecodedFrame m_latestFrame;
+    static void* m_simulatedBuffer;
 };
 
 #endif // VITA_LUNA_H264_DECODER_H

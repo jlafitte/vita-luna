@@ -25,8 +25,17 @@ public:
     static void drawHeader(const char* title);
     static void drawFooter(const char* promptText);
     
+    // Live Video Stream Texture Management
+    static bool createStreamTexture(uint32_t width = LUNA_TARGET_WIDTH, uint32_t height = LUNA_TARGET_HEIGHT);
+    static void destroyStreamTexture();
+    static bool updateStreamTexture(const void* pixelData, uint32_t width, uint32_t height, uint32_t pitch);
+    static void drawStreamTexture(float x, float y, float width, float height);
+    static bool hasStreamTexture();
+
 private:
     static bool m_initialized;
+    static uint32_t m_streamTexWidth;
+    static uint32_t m_streamTexHeight;
 };
 
 #endif // VITA_LUNA_RENDERER_H

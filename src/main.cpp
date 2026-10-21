@@ -13,6 +13,8 @@
 #include <psp2/sysmodule.h>
 #include <psp2/ctrl.h>
 #include <psp2/power.h>
+#include <psp2/screenshot.h>
+#include <psp2/apputil.h>
 #endif
 
 static bool g_running = true;
@@ -23,6 +25,11 @@ static void initVitaSystemModules() {
     sceSysmoduleLoadModule(SCE_SYSMODULE_SSL);
     sceSysmoduleLoadModule(SCE_SYSMODULE_HTTP);
     sceSysmoduleLoadModule(SCE_SYSMODULE_AVPLAYER);
+    sceSysmoduleLoadModule(SCE_SYSMODULE_SCREEN_SHOT);
+
+    // Mount photo filesystem and enable PS+START screenshot capture
+    sceAppUtilPhotoMount();
+    sceScreenShotEnable();
     
     // Set CPU clock to maximum performance (444 MHz) for low-latency streaming
     scePowerSetArmClockFrequency(444);
@@ -37,6 +44,9 @@ static void initVitaSystemModules() {
 
 static void shutdownVitaSystemModules() {
 #if defined(__vita__)
+    sceScreenShotDisable();
+    sceAppUtilPhotoUmount();
+    sceSysmoduleUnloadModule(SCE_SYSMODULE_SCREEN_SHOT);
     sceSysmoduleUnloadModule(SCE_SYSMODULE_AVPLAYER);
     sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTP);
     sceSysmoduleUnloadModule(SCE_SYSMODULE_SSL);

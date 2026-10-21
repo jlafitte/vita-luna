@@ -9,8 +9,12 @@
 #endif
 
 bool Renderer::m_initialized = false;
+uint32_t Renderer::m_streamTexWidth = 0;
+uint32_t Renderer::m_streamTexHeight = 0;
+
 #if defined(__vita__)
 static vita2d_pgf* g_font = nullptr;
+static vita2d_texture* g_streamTexture = nullptr;
 #endif
 
 bool Renderer::init() {
@@ -32,6 +36,8 @@ bool Renderer::init() {
 
 void Renderer::shutdown() {
     if (!m_initialized) return;
+
+    destroyStreamTexture();
 
 #if defined(__vita__)
     if (g_font) {
@@ -135,4 +141,92 @@ void Renderer::drawFooter(const char* promptText) {
     } else {
         drawText(20, VITA_SCREEN_HEIGHT - 10, RGBA8(200, 210, 225, 255), "(X) Select  |  (O) Back  |  (SELECT) Stats  |  (START) Settings");
     }
+}
+
+bool Renderer::createStreamTexture(uint32_t width, uint32_t height) {
+    m_streamTexWidth = width;
+    m_streamTexHeight = height;
+
+#if defined(__vita__)
+    if (g_streamTexture) {
+        vita2d_free_texture(g_streamTexture);
+        g_streamTexture = nullptr;
+    }
+
+    g_streamTexture = vita2d_create_empty_texture_format(width, height, SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_RGBA);
+    if (!g_streamTexture) {
+        LOG_ERROR("Failed to allocate vita2d video stream texture (%ux%u)", width, height);
+        return false;
+    }
+
+    vita2d_texture_set_filters(g_streamTexture, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+    LOG_INFO("Allocated hardware video stream texture (%ux%u, RGBA8)", width, height);
+#else
+    LOG_INFO("Host simulation: Created stream texture %ux%u", width, height);
+#endif
+    return true;
+}
+
+void Renderer::destroyStreamTexture() {
+#if defined(__vita__)
+    if (g_streamTexture) {
+        vita2d_free_texture(g_streamTexture);
+        g_streamTexture = nullptr;
+        LOG_INFO("Freed hardware video stream texture.");
+    }
+#endif
+    m_streamTexWidth = 0;
+    m_streamTexHeight = 0;
+}
+
+bool Renderer::updateStreamTexture(const void* pixelData, uint32_t width, uint32_t height, uint32_t pitch) {
+    if (!pixelData) return false;
+
+#if defined(__vita__)
+    if (!g_streamTexture) return false;
+
+    void* dst = vita2d_texture_get_datap(g_streamTexture);
+    if (!dst) return false;
+
+    uint32_t dstStride = vita2d_texture_get_stride(g_streamTexture);
+    const uint8_t* srcRow = static_cast<const uint8_t*>(pixelData);
+    uint8_t* dstRow = static_cast<uint8_t*>(dst);
+
+    uint32_t copyBytes = width * 4;
+    if (copyBytes > pitch && pitch > 0) copyBytes = pitch;
+    if (copyBytes > dstStride) copyBytes = dstStride;
+
+    for (uint32_t y = 0; y < height && y < m_streamTexHeight; ++y) {
+        memcpy(dstRow + y * dstStride, srcRow + y * pitch, copyBytes);
+    }
+    return true;
+#else
+    (void)width; (void)height; (void)pitch;
+    return true;
+#endif
+}
+
+void Renderer::drawStreamTexture(float x, float y, float width, float height) {
+#if defined(__vita__)
+    if (g_streamTexture) {
+        float texW = (float)vita2d_texture_get_width(g_streamTexture);
+        float texH = (float)vita2d_texture_get_height(g_streamTexture);
+        float scaleX = width / texW;
+        float scaleY = height / texH;
+        vita2d_draw_texture_scale(g_streamTexture, x, y, scaleX, scaleY);
+        return;
+    }
+#endif
+
+    // Fallback viewport background with subtle scanline accent
+    drawRect(x, y, width, height, RGBA8(12, 16, 28, 255));
+    drawRectOutline(x, y, width, height, 1.5f, RGBA8(0, 180, 220, 180));
+}
+
+bool Renderer::hasStreamTexture() {
+#if defined(__vita__)
+    return g_streamTexture != nullptr;
+#else
+    return m_streamTexWidth > 0 && m_streamTexHeight > 0;
+#endif
 }
