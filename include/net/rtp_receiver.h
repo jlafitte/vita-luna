@@ -29,12 +29,26 @@ public:
     // Reset stream metrics upon new session start
     static void resetMetrics();
 
+    // Dynamic Stream Tuning
+    static int getRecommendedBitrateMbps();
+    static void setBitrateLimitKbps(uint32_t kbps);
+    static uint32_t getBitrateLimitKbps();
+
+    // SRTP Session Configuration
+    static bool configureSrtpKeys(const uint8_t* masterKey, const uint8_t* masterSalt);
+
+    // Network drain logic (invoked by worker thread or fallback polling)
+    static void drainNetworkPackets();
+
 private:
     static bool m_running;
     static int m_videoSock;
     static int m_audioSock;
     static int m_videoPort;
     static int m_audioPort;
+    static uint32_t m_bitrateLimitKbps;
+    static int m_recommendedBitrateMbps;
+    static int m_workerThreadId;
 
     // H.264 FU-A (Fragmentation Unit) Reassembly Buffer
     static std::vector<uint8_t> m_nalReassemblyBuffer;
